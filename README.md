@@ -6,7 +6,7 @@ An open, density-estimation-free measurement harness for the usable
 *Covert Capacity in LLM Chain-of-Thought is Graded and Decoder-Relative*.
 
 This codebase is wired to the frozen confirmatory pre-registration
-([`CCAP_PreRegistration_Grid.md`](CCAP_PreRegistration_Grid.md)): 273 cells
+([`CCAP_Preregistration_Grid.md`](CCAP_Preregistration_Grid.md)): 273 cells
 (13 model-conditions × 7 mechanisms × 3 tasks), n=60 paired items, primary metric
 `Ĉ_ctrl`, hypotheses H1–H5 under Holm–Bonferroni.
 
