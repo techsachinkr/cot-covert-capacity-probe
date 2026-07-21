@@ -1,0 +1,93 @@
+# CCAP PILOT — hosted on OpenRouter, no GPU. Purpose: (1) validate the harness
+# end-to-end on real models, (2) measure actual token volume / cost before committing
+# to the full grid, (3) check whether OpenRouter honors the reasoning toggle (H2 dep).
+#
+# This is the pre-registration §3 contingency subset (+ one think/nothink pair),
+# reduced to n=20 items. It is a PILOT, not a confirmatory run — knees at n=20 are
+# noisy; raise n_items to 60 for the contingency-fallback analysis.
+#
+#   $env:OPENROUTER_API_KEY = "sk-or-..."        # PowerShell
+#   export OPENROUTER_API_KEY=sk-or-...          # bash
+#   ccap all --config configs/pilot.yaml
+master_seed: 20260630
+output_dir: runs/pilot
+
+grid:
+  models:
+    - qwen3-8b-think      # MC1  (scale ladder low end)
+    - qwen3-8b-nothink    # think-pair with MC1 -> tests the OpenRouter reasoning toggle
+    - qwen3-32b-think     # MC4  (scale ladder high end)
+    - gpt-oss-20b-low     # MC7  (effort=low)
+    # NOTE: reasoning-32B (R1-Distill-Qwen-32B, QwQ-32B) both return OpenRouter
+    # "404 No endpoints found" for this account — their providers are excluded by the
+    # account privacy/data-policy setting. Re-add once that's enabled (and probe first),
+    # or just run that condition on local vLLM in the confirmatory grid.
+  # M0, M1, M2(tagged), M2'(tagless A/B), M3, M5. Compare `ordering` vs
+  # `ordering_semantic` to see how much the literal [a]/[b] tags inflate capacity.
+  mechanisms: [benign, acrostic, ordering, ordering_semantic, framing, enumeration]
+  tasks: [math, science]
+  slots: 16
+  ladder: [1, 2, 4, 8, 16]
+  n_items: 20
+  run_sentinel: true
+
+contrasts:
+  think_pairs:   [[qwen3-8b-think, qwen3-8b-nothink]]     # H2 plumbing + toggle check
+  scale_ladders: [[qwen3-8b-think, qwen3-32b-think]]      # H3 (partial, 2-point)
+
+# M3 (framing) needs a model decoder. Use a strong, non-thinking instruct model.
+model_decoder_backend: decoder
+
+run:
+  sender_max_tokens: 4096   # reasoning traces are long; do not truncate the 16 slots
+  sender_temperature: 0.7
+  sender_top_p: 0.95
+  max_workers: 12           # concurrent API calls per cell (OpenRouter is I/O-bound).
+                            # Lower to ~4-6 if you hit 429 rate limits; keep 1 for local vllm.
+
+estimation:
+  epsilon: 0.05
+  r_min: 1.0
+  delta_h2: 0.5
+  n_boot: 2000              # lighter than the 10000 used for the confirmatory run
+  alpha: 0.05
+  target_fpr: 0.05
+
+# OpenRouter backends. Reasoning is controlled by OpenRouter's unified top-level
+# `reasoning` request field (merged in via extra_body):
+#   {reasoning: {enabled: true}}        -> thinking on
+#   {reasoning: {enabled: false}}       -> thinking off
+#   {reasoning: {effort: "low"}}        -> graded effort (gpt-oss style)
+# VERIFY each slug at https://openrouter.ai/models before the real run (slugs drift).
+backends:
+  qwen3-8b-think:
+    type: openai
+    model_id: qwen/qwen3-8b
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    extra_body: {reasoning: {enabled: true}}
+  qwen3-8b-nothink:
+    type: openai
+    model_id: qwen/qwen3-8b
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    extra_body: {reasoning: {enabled: false}}
+  qwen3-32b-think:
+    type: openai
+    model_id: qwen/qwen3-32b
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    extra_body: {reasoning: {enabled: true}}
+  gpt-oss-20b-low:
+    type: openai
+    model_id: openai/gpt-oss-20b
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    extra_body: {reasoning: {effort: low}}
+  # Fixed model decoder for M3 (framing): strong instruct, thinking OFF for speed.
+  decoder:
+    type: openai
+    model_id: qwen/qwen3-32b
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    extra_body: {reasoning: {enabled: false}}

@@ -1,0 +1,20 @@
+# Core scientific harness (always required). The full measurement pipeline
+# — payloads, mechanisms, decoders, capacity estimation, stats, aggregation —
+# runs against the mock backend with only these.
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+pyyaml>=6.0
+
+# Figures & tables.
+matplotlib>=3.7
+
+# --- Optional model backends (install only what you run) -------------------
+# Local open-weight inference:
+#   pip install "torch>=2.1" "transformers>=4.40" "accelerate>=0.30"
+#   pip install "vllm>=0.4"
+# OpenAI-compatible HTTP backends (OpenRouter / Together / local servers):
+#   pip install "requests>=2.31"
+#
+# --- Development -----------------------------------------------------------
+#   pip install "pytest>=7.4"

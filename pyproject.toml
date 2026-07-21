@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccap"
+version = "0.1.0"
+description = "CCAP: Controllable-Capacity Auditing Probe — an operational upper bound on the usable covert-channel capacity of LLM chain-of-thought."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Anonymous (double-blind submission)" }]
+keywords = ["ai-safety", "steganography", "chain-of-thought", "covert-channel", "capacity", "auditing"]
+
+# Core dependencies — the scientific harness runs on these alone (no GPU / no model deps).
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Figure / table generation.
+viz = ["matplotlib>=3.7"]
+# Local open-weight inference via HuggingFace transformers.
+hf = ["torch>=2.1", "transformers>=4.40", "accelerate>=0.30"]
+# Faster local inference.
+vllm = ["vllm>=0.4"]
+# OpenAI-compatible HTTP backends (OpenRouter / Together / local servers).
+api = ["requests>=2.31"]
+# Development / testing.
+dev = ["pytest>=7.4", "matplotlib>=3.7"]
+
+[project.scripts]
+ccap = "ccap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ccap*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,9 @@
+# Store LF in the repo and check out LF everywhere (so shell scripts and Python
+# work on the Linux GPU box even though the repo is authored on Windows).
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.png binary
+*.pdf binary

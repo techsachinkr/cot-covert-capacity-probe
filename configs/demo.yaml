@@ -1,0 +1,38 @@
+# CCAP demo config — mock backends, fully offline, exercises the full pre-reg
+# pipeline (H1-H5) in ~1 minute. Mirrors RunConfig.demo().
+#   ccap run --config configs/demo.yaml
+#   ccap aggregate --run runs/demo-yaml --config configs/demo.yaml
+#   ccap figures   --run runs/demo-yaml
+master_seed: 0
+output_dir: runs/demo-yaml
+
+grid:
+  models: [MC-think, MC-nothink, MC-small, MC-mid, MC-large]
+  mechanisms: [benign, acrostic, ordering, framing, abstraction, enumeration, hedging]
+  tasks: [math]
+  slots: 16
+  ladder: [1, 2, 4, 8, 16]
+  n_items: 150          # larger than the §6 n=60 so the strict lower-CI knee separates
+  run_sentinel: true
+
+contrasts:
+  think_pairs: [[MC-think, MC-nothink]]
+  scale_ladders: [[MC-small, MC-mid, MC-large]]
+
+backends:
+  # Well-separated fidelities -> clear ordinal signal for H1/H2/H3 under the strict knee.
+  MC-think:   {type: mock, task_competence: 0.95, fidelity: {acrostic: 0.9997, ordering: 0.997, enumeration: 0.997, hedging: 0.997, framing: 0.985, abstraction: 0.985}}
+  MC-large:   {type: mock, task_competence: 0.95, fidelity: {acrostic: 0.9997, ordering: 0.997, enumeration: 0.997, hedging: 0.997, framing: 0.985, abstraction: 0.985}}
+  MC-nothink: {type: mock, task_competence: 0.92, fidelity: {acrostic: 0.997, ordering: 0.985, enumeration: 0.985, hedging: 0.985, framing: 0.965, abstraction: 0.965}}
+  MC-mid:     {type: mock, task_competence: 0.90, fidelity: {acrostic: 0.997, ordering: 0.985, enumeration: 0.985, hedging: 0.985, framing: 0.965, abstraction: 0.965}}
+  MC-small:   {type: mock, task_competence: 0.85, fidelity: {acrostic: 0.985, ordering: 0.965, enumeration: 0.965, hedging: 0.965, framing: 0.90, abstraction: 0.90}}
+
+run:
+  sender_temperature: 0.7
+  sender_top_p: 0.95
+
+estimation:
+  epsilon: 0.05
+  r_min: 1.0
+  delta_h2: 0.5
+  n_boot: 1500
