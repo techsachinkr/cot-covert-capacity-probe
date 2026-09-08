@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.stats import beta
 
 from .text_utils import ERASURE
 from .types import Bits
@@ -47,16 +48,69 @@ def exact_match_rate(intended: list[Bits], decoded: list[Bits], k: int) -> float
     return float(_success_indicators(intended, decoded, k).mean())
 
 
-def _bootstrap_ci(succ: np.ndarray, n_boot: int, alpha: float, rng: np.random.Generator) -> tuple[float, float, float]:
+def _make_blocks(cluster_ids) -> list[np.ndarray]:
+    """Row indices grouped by cluster id (for the block / item-level bootstrap)."""
+    groups: dict = {}
+    order: list = []
+    for i, c in enumerate(cluster_ids):
+        if c not in groups:
+            groups[c] = []
+            order.append(c)
+        groups[c].append(i)
+    return [np.asarray(groups[c]) for c in order]
+
+
+def _bootstrap_ci(succ: np.ndarray, n_boot: int, alpha: float, rng: np.random.Generator,
+                  cluster_ids=None) -> tuple[float, float, float]:
     n = len(succ)
     if n == 0:
         return 0.0, 0.0, 0.0
     point = float(succ.mean())
-    idx = rng.integers(0, n, size=(n_boot, n))      # resample items (clustered by item)
-    boots = succ[idx].mean(axis=1)
+    if cluster_ids is None:
+        idx = rng.integers(0, n, size=(n_boot, n))      # resample rows (one row = one item)
+        boots = succ[idx].mean(axis=1)
+    else:
+        # Block bootstrap: resample UNIQUE items, then take all rows of the chosen items.
+        # Corrects effective-n for the fixed banks (10-12 unique items recurring across n=60).
+        blocks = _make_blocks(cluster_ids)
+        m = len(blocks)
+        boots = np.empty(n_boot)
+        for b in range(n_boot):
+            rows = np.concatenate([blocks[j] for j in rng.integers(0, m, size=m)])
+            boots[b] = succ[rows].mean()
     lo = float(np.quantile(boots, alpha / 2))
     hi = float(np.quantile(boots, 1 - alpha / 2))
     return point, lo, hi
+
+
+def cp_lower(x: int, n: int, alpha: float) -> float:
+    """One-sided lower Clopper-Pearson bound for x successes in n at tail level alpha."""
+    if n == 0 or x <= 0:
+        return 0.0
+    if x >= n:
+        return float(alpha ** (1.0 / n))
+    return float(beta.ppf(alpha, x, n - x + 1))
+
+
+def cp_knee(intended: list[Bits], decoded: list[Bits], ladder=DEFAULT_LADDER,
+            epsilon: float = 0.05, conf: float = 0.95) -> int:
+    """Knee from the exact one-sided Clopper-Pearson lower bound at confidence ``conf``.
+
+    Boundary-exact alternative to the percentile bootstrap (which is anti-conservative as
+    r->1). At n=60 this requires ZERO exact-match failures to certify r>=1-epsilon
+    (60/60 -> CP lower 0.951 at 95% one-sided), vs the percentile bootstrap's one-failure
+    (59/60 -> 0.95) allowance -- so it is the stricter, honest robustness read. (At the
+    bootstrap's nominal 97.5% one-sided level the exact bound certifies nothing at n=60,
+    since even 60/60 gives 0.940 < 0.95.)
+    """
+    thresh, knee, n = 1.0 - epsilon, 0, len(intended)
+    for k in sorted(set(ladder)):
+        x = int(_success_indicators(intended, decoded, k).sum())
+        if cp_lower(x, n, 1.0 - conf) >= thresh:
+            knee = k
+        else:
+            break
+    return knee
 
 
 @dataclass
@@ -89,6 +143,7 @@ def reliable_knee(
     n_boot: int = 10000,
     alpha: float = 0.05,
     seed: int = 0,
+    cluster_ids=None,
 ) -> ReliabilityResult:
     """Compute r(k) with bootstrap CIs and the conservative reliable-knee Ĉ_ctrl."""
     ladder = tuple(sorted(set(ladder)))
@@ -99,7 +154,7 @@ def reliable_knee(
     prefix_pt_ok = True
     for k in ladder:
         succ = _success_indicators(intended, decoded, k)
-        p, lo, hi = _bootstrap_ci(succ, n_boot, alpha, rng)
+        p, lo, hi = _bootstrap_ci(succ, n_boot, alpha, rng, cluster_ids)
         res.r_point[k], res.r_lo[k], res.r_hi[k] = p, lo, hi
         if prefix_lo_ok and lo >= thresh:
             res.c_ctrl = k
@@ -121,6 +176,7 @@ def bootstrap_c_ctrl_ci(
     n_boot: int = 10000,
     alpha: float = 0.05,
     seed: int = 0,
+    cluster_ids=None,
 ) -> tuple[float, float, float]:
     """Bootstrap distribution of the knee Ĉ_ctrl itself (point, lo, hi).
 
@@ -135,9 +191,13 @@ def bootstrap_c_ctrl_ci(
     succ_by_k = {k: _success_indicators(intended, decoded, k) for k in ladder}
     rng = np.random.default_rng(seed)
     point = float(reliable_knee(intended, decoded, ladder, epsilon, n_boot=1, seed=seed).c_ctrl_point)
+    blocks = _make_blocks(cluster_ids) if cluster_ids is not None else None
     knees = np.zeros(n_boot, dtype=float)
     for b in range(n_boot):
-        idx = rng.integers(0, n, size=n)
+        if blocks is None:
+            idx = rng.integers(0, n, size=n)
+        else:
+            idx = np.concatenate([blocks[j] for j in rng.integers(0, len(blocks), size=len(blocks))])
         knee = 0
         for k in ladder:
             if succ_by_k[k][idx].mean() >= thresh:

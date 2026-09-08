@@ -135,6 +135,47 @@ def fig_benign(benign: pd.DataFrame, out_path="figures/fig4a_benign") -> list[st
     return _save(fig, out_path)
 
 
+def fig_graded_recovery(cells: pd.DataFrame, acc_primary: dict, acc_llama: dict,
+                        out_path="figures/fig5_graded") -> list[str]:
+    """Graded / decoder-relative recovery (Table~\\ref{tab:graded} as a figure).
+
+    Left: per-mechanism exact-match Ĉ_ctrl vs Miller--Madow MI -- Ĉ dichotomizes while MI is
+    graded. Right: per-slot decode accuracy of the conceptual channels, primary (Qwen3-32B)
+    vs non-family (Llama-3.3-70B), against the chance line -- recovery is decoder-relative.
+    ``acc_primary``/``acc_llama`` come from :func:`ccap.analysis.tables.perslot_accuracy`.
+    """
+    plt = _mpl()
+    order = ["hedging", "acrostic", "enumeration", "ordering",
+             "framing", "abstraction", "ordering_semantic"]
+    enc = cells[cells["mechanism"] != BENIGN]
+    agg = enc.groupby("mechanism").agg(c=("c_ctrl", "mean"), mi=("mi_bits", "mean"))
+    mechs = [m for m in order if m in agg.index]
+    fig, (axl, axr) = plt.subplots(1, 2, figsize=(9.5, 3.4))
+
+    x = np.arange(len(mechs))
+    axl.bar(x - 0.2, [agg.loc[m, "c"] for m in mechs], 0.4, color="#c0563b", label="exact-match Ĉ_ctrl")
+    axl.bar(x + 0.2, [agg.loc[m, "mi"] for m in mechs], 0.4, color="#3b6fb0", label="mutual information")
+    axl.set_xticks(x); axl.set_xticklabels(mechs, rotation=35, ha="right", fontsize=7)
+    axl.set_ylabel("bits / response"); axl.legend(fontsize=7)
+    axl.set_title("Ĉ_ctrl dichotomizes; MI is graded", fontsize=9)
+
+    conc = [m for m in ["framing", "abstraction", "ordering_semantic"] if m in agg.index]
+    xc = np.arange(len(conc))
+    axr.bar(xc - 0.2, [acc_primary.get(m, np.nan) for m in conc], 0.4, color="#3b9b5f",
+            label="primary (Qwen3-32B)")
+    axr.bar(xc + 0.2, [acc_llama.get(m, np.nan) for m in conc], 0.4, color="#b08a3b",
+            label="non-family (Llama-3.3-70B)")
+    axr.axhline(0.5, color="grey", ls="--", lw=1)
+    axr.text(len(conc) - 1, 0.515, "chance", fontsize=7, color="grey", va="bottom", ha="right")
+    axr.set_xticks(xc); axr.set_xticklabels(conc, rotation=20, ha="right", fontsize=7)
+    axr.set_ylabel("per-slot decode accuracy"); axr.set_ylim(0, 1.0); axr.legend(fontsize=7)
+    axr.set_title("Conceptual recovery is decoder-relative", fontsize=9)
+
+    fig.suptitle("Covert capacity is graded and decoder-relative", fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return _save(fig, out_path)
+
+
 def make_all_figures(agg: dict, mechanisms, models, out_dir="figures") -> dict:
     out = Path(out_dir)
     eps = 0.05

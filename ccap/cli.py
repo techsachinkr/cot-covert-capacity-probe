@@ -77,9 +77,11 @@ def _run_grid(cfg: RunConfig) -> Path:
     return out
 
 
-def _aggregate(run_dir: Path, est: EstimationConfig, contrasts: dict | None = None) -> dict:
+def _aggregate(run_dir: Path, est: EstimationConfig, contrasts: dict | None = None,
+               sensitivity: bool = False, cluster_bootstrap: bool = False) -> dict:
     df = load_trials(run_dir / "trials.csv")
-    agg = aggregate_all(df, AggConfig(estimation=est, contrasts=contrasts),
+    agg = aggregate_all(df, AggConfig(estimation=est, contrasts=contrasts,
+                                      sensitivity=sensitivity, cluster_bootstrap=cluster_bootstrap),
                         output_dir=str(run_dir / "analysis"))
     print(f"[ccap] aggregated -> {run_dir / 'analysis'} ({len(agg['cells'])} cells)")
     return agg
@@ -124,7 +126,8 @@ def cmd_aggregate(args: argparse.Namespace) -> None:
     cfg = load_config(args.config) if args.config else None
     est = cfg.estimation if cfg else EstimationConfig()
     contrasts = cfg.contrasts if cfg else None
-    _print_headline(_aggregate(Path(args.run), est, contrasts))
+    _print_headline(_aggregate(Path(args.run), est, contrasts,
+                               sensitivity=args.sensitivity, cluster_bootstrap=args.cluster_bootstrap))
 
 
 def cmd_figures(args: argparse.Namespace) -> None:
@@ -190,6 +193,10 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("aggregate", help="raw trials -> capacity estimates")
     a.add_argument("--run", required=True)
     a.add_argument("--config", default=None)
+    a.add_argument("--sensitivity", action="store_true",
+                   help="also emit capacity_map_failmode + epsilon_sweep (B2-4/B2-7)")
+    a.add_argument("--cluster-bootstrap", action="store_true",
+                   help="resample unique items (task_item_id) instead of the 60 draws (B2-2)")
     a.set_defaults(func=cmd_aggregate)
 
     f = sub.add_parser("figures", help="aggregated CSVs -> figures + tables")

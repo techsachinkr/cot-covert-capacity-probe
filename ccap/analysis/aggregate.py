@@ -14,7 +14,7 @@ separation (Fig 4a / H4), sentinel gap (S6), compliance, and an exclusions repor
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +25,7 @@ from ..config import EstimationConfig
 from ..grid import BENIGN
 from ..mechanisms import all_mechanisms, get_mechanism
 from ..payloads import csv_to_bits, str_to_bits
-from ..reliability import bootstrap_c_ctrl_ci, reliable_knee
+from ..reliability import bootstrap_c_ctrl_ci, cp_knee, reliable_knee
 from ..sentinel import calibrate_threshold
 
 CELL_KEYS = ["model", "mechanism", "task"]
@@ -40,6 +40,8 @@ class AggConfig:
     estimation: EstimationConfig
     do_knee_ci: bool = True
     contrasts: dict | None = None   # think_pairs / effort_triples / scale_ladders for H2/H3
+    sensitivity: bool = False       # also emit fail-mode capacity map + epsilon sweep (heavier)
+    cluster_bootstrap: bool = False  # resample unique items (task_item_id), not the 60 draws (B2-2)
 
 
 def load_trials(source) -> pd.DataFrame:
@@ -60,26 +62,35 @@ def _bits(series_i, series_d):
     return intended, decoded
 
 
-def _knee(intended, decoded, est: EstimationConfig, seed: int, do_ci: bool):
+def _knee(intended, decoded, est: EstimationConfig, seed: int, do_ci: bool, cluster_ids=None):
     rk = reliable_knee(intended, decoded, ladder=est.ladder, epsilon=est.epsilon,
-                       n_boot=est.n_boot, alpha=est.alpha, seed=seed)
+                       n_boot=est.n_boot, alpha=est.alpha, seed=seed, cluster_ids=cluster_ids)
     if do_ci:
         point, lo, hi = bootstrap_c_ctrl_ci(intended, decoded, ladder=est.ladder,
                                             epsilon=est.epsilon, n_boot=est.n_boot,
-                                            alpha=est.alpha, seed=seed + 1)
+                                            alpha=est.alpha, seed=seed + 1, cluster_ids=cluster_ids)
     else:
         point, lo, hi = float(rk.c_ctrl_point), float(rk.c_ctrl), float(rk.c_ctrl_point)
     return rk, point, lo, hi
 
 
-def cell_table(df: pd.DataFrame, cfg: AggConfig) -> pd.DataFrame:
+def cell_table(df: pd.DataFrame, cfg: AggConfig, exclude_mode: str = "drop") -> pd.DataFrame:
     est = cfg.estimation
     rows = []
     for (model, mech, task), g in df.groupby(CELL_KEYS, sort=False):
         n = len(g)
-        ok = g[g.get("x_excluded", 0) == 0] if "x_excluded" in g else g
+        if exclude_mode == "drop":
+            ok = g[g.get("x_excluded", 0) == 0] if "x_excluded" in g else g
+        else:  # "fail": keep all rows; blank the receiver decode on excluded ones (-> failures)
+            ok = g.copy()
+            if "x_excluded" in ok:
+                excl = ok["x_excluded"] == 1
+                for c in [c for c in ok.columns if c.startswith("decoded_")]:
+                    ok.loc[excl, c] = ""
         n_ok = len(ok)
-        excl_rate = 1.0 - n_ok / max(n, 1)
+        excl_rate = (1.0 - len(g[g["x_excluded"] == 0]) / max(n, 1)) if "x_excluded" in g else 0.0
+        clusters = (ok["task_item_id"].to_numpy()
+                    if cfg.cluster_bootstrap and "task_item_id" in ok and n_ok else None)
         seed = abs(hash((model, mech, task))) % (2**31)
         row = {"model": model, "mechanism": mech, "task": task, "n": n, "n_ok": n_ok,
                "exclusion_rate": excl_rate,
@@ -94,29 +105,35 @@ def cell_table(df: pd.DataFrame, cfg: AggConfig) -> pd.DataFrame:
                 if col not in ok or n_ok == 0:
                     continue
                 intended, decoded = _bits(ok["intended"], ok[col])
-                rk, point, lo, hi = _knee(intended, decoded, est, seed, cfg.do_knee_ci)
+                rk, point, lo, hi = _knee(intended, decoded, est, seed, cfg.do_knee_ci, clusters)
                 if best is None or point > best[1]:
                     best = (rk, point, lo, hi)
             if best is None:
                 rk, point, lo, hi = reliable_knee([], []), 0.0, 0.0, 0.0
             else:
                 rk, point, lo, hi = best
-            mi, asym = 0.0, 0.0
+            mi, asym, ach, block, clamp, cp = 0.0, 0.0, 0.0, None, 0.0, 0
         else:
             col = _receiver_col(mech)
             intended, decoded = _bits(ok["intended"], ok[col]) if (col in ok and n_ok) else ([], [])
-            rk, point, lo, hi = _knee(intended, decoded, est, seed, cfg.do_knee_ci)
+            rk, point, lo, hi = _knee(intended, decoded, est, seed, cfg.do_knee_ci, clusters)
             # S1/P2 cross-check uses the SAME epsilon as the headline knee (was defaulting
             # to 0.01, a stricter tolerance than the configured 0.05).
             cap = estimate_capacity(intended, decoded, epsilon=est.epsilon) if intended else None
             mi = cap.capacity_bits if cap else 0.0
             asym = cap.asymmetry if cap else 0.0
+            ach = cap.achieved_bits if cap else 0.0                       # B2-1: coded lower bound
+            block = cap.block_capacity_bits if cap else None             # B2-5: whole-word MI
+            clamp = (cap.capacity_bits - cap.capacity_bits_unclamped) if cap else 0.0  # B2-5
+            cp = cp_knee(intended, decoded, ladder=est.ladder,
+                         epsilon=est.epsilon) if intended else 0                       # B2-3
 
         row.update({
             "c_ctrl": rk.c_ctrl, "c_ctrl_point": rk.c_ctrl_point,
-            "c_ctrl_lo": lo, "c_ctrl_hi": hi,
+            "c_ctrl_lo": lo, "c_ctrl_hi": hi, "c_ctrl_cp": cp,
             "viable": bool(lo > est.r_min),
             "mi_bits": mi, "asymmetry": asym,
+            "achieved_bits": ach, "block_mi_bits": block, "mi_clamp_bits": clamp,
             "low_confidence": bool(excl_rate > est.exclusion_cell_flag),
         })
         for k in est.ladder:
@@ -135,7 +152,8 @@ def capacity_map(cells: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["model", "mechanism", "c_ctrl"])
     return (enc.groupby(["model", "mechanism"], as_index=False)
             .agg(c_ctrl=("c_ctrl", "mean"), c_ctrl_lo=("c_ctrl_lo", "mean"),
-                 c_ctrl_hi=("c_ctrl_hi", "mean"), viable=("viable", "any")))
+                 c_ctrl_hi=("c_ctrl_hi", "mean"), viable=("viable", "any"),
+                 achieved_bits=("achieved_bits", "mean"), c_ctrl_cp=("c_ctrl_cp", "mean")))
 
 
 def reliability_curves(cells: pd.DataFrame, est: EstimationConfig) -> pd.DataFrame:
@@ -206,6 +224,45 @@ def exclusions_table(cells: pd.DataFrame, est: EstimationConfig) -> pd.DataFrame
     return by_mech
 
 
+def position_profile(df: pd.DataFrame, cfg: AggConfig) -> pd.DataFrame:
+    """B2-6: per-slot recovery accuracy by slot position, to justify prefix-truncation
+    (flat-in-position => reading the first k slots approximates a native k-bit channel)."""
+    est = cfg.estimation
+    rows = []
+    for (model, mech, task), g in df[df["mechanism"] != BENIGN].groupby(CELL_KEYS, sort=False):
+        ok = g[g.get("x_excluded", 0) == 0] if "x_excluded" in g else g
+        col = _receiver_col(mech)
+        if col not in ok or len(ok) == 0:
+            continue
+        intended, decoded = _bits(ok["intended"], ok[col])
+        cap = estimate_capacity(intended, decoded, epsilon=est.epsilon) if intended else None
+        if cap is None:
+            continue
+        for j, err in enumerate(cap.per_position_error):
+            rows.append({"model": model, "mechanism": mech, "task": task,
+                         "position": j + 1, "accuracy": 1.0 - err})
+    return pd.DataFrame(rows)
+
+
+def epsilon_sweep(df: pd.DataFrame, cfg: AggConfig, epsilons=(0.01, 0.05, 0.10)) -> pd.DataFrame:
+    """B2-7: re-run the knee at several tolerances and report the H1 structural>conceptual
+    effect, to show the surface/conceptual stratification is stable in epsilon."""
+    from ..hypotheses import evaluate_hypotheses
+    out = []
+    for eps in epsilons:
+        cfg2 = AggConfig(estimation=replace(cfg.estimation, epsilon=eps),
+                         do_knee_ci=False, contrasts=cfg.contrasts)
+        cells = cell_table(df, cfg2)
+        hyp = evaluate_hypotheses(cells, cfg2.estimation, cfg2.contrasts)
+        h1 = hyp[(hyp["hypothesis"] == "H1") & (hyp["contrast"] == "structural>conceptual")]
+        out.append({
+            "epsilon": eps,
+            "struct_minus_concept": float(h1["effect"].iloc[0]) if len(h1) else np.nan,
+            "holm_p": float(h1["holm_p"].iloc[0]) if len(h1) and pd.notna(h1["holm_p"].iloc[0]) else np.nan,
+        })
+    return pd.DataFrame(out)
+
+
 def aggregate_all(source, cfg: AggConfig, output_dir: str | None = None) -> dict[str, pd.DataFrame]:
     df = load_trials(source)
     cells = cell_table(df, cfg)
@@ -217,7 +274,11 @@ def aggregate_all(source, cfg: AggConfig, output_dir: str | None = None) -> dict
         "sentinel": sentinel_table(df, cells, cfg.estimation),
         "compliance": compliance_table(df, cells),
         "exclusions": exclusions_table(cells, cfg.estimation),
+        "position_profile": position_profile(df, cfg),
     }
+    if cfg.sensitivity:
+        out["capacity_map_failmode"] = capacity_map(cell_table(df, cfg, exclude_mode="fail"))
+        out["epsilon_sweep"] = epsilon_sweep(df, cfg)
     from ..hypotheses import evaluate_hypotheses
     out["hypotheses"] = evaluate_hypotheses(cells, cfg.estimation, cfg.contrasts)
     if output_dir:

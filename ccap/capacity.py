@@ -141,6 +141,7 @@ class CapacityResult:
     capacity_bits_raw: float          # sum_j MI_plugin_j (no correction, no clip)
     achieved_bits: float              # repetition-code lower bound at epsilon
     epsilon: float
+    capacity_bits_unclamped: float = 0.0  # sum_j MI_MM_j WITHOUT the max(0,.) clip (clamp magnitude)
     per_position_mi: list[float] = field(default_factory=list)
     per_position_error: list[float] = field(default_factory=list)
     per_position_p01: list[float] = field(default_factory=list)  # P(decode=1 | true=0)
@@ -175,7 +176,7 @@ def estimate_capacity(
     decoded: list[Bits],
     epsilon: float = 0.01,
     max_rep: int = 21,
-    block_max_k: int = 8,
+    block_max_k: int = 4,
 ) -> CapacityResult:
     """Estimate per-mechanism capacity from aligned (intended, decoded) bit trials."""
     if len(intended) != len(decoded):
@@ -191,6 +192,7 @@ def estimate_capacity(
 
     per_mi, per_err, per_p01, per_p10, per_eras = [], [], [], [], []
     cap_mm = 0.0
+    cap_mm_unclamped = 0.0
     cap_raw = 0.0
     achieved = 0.0
     total_eras = 0
@@ -200,6 +202,7 @@ def estimate_capacity(
         mm_c = max(0.0, mm)
         per_mi.append(mm_c)
         cap_mm += mm_c
+        cap_mm_unclamped += mm
         cap_raw += plugin
 
         row0, row1 = M[0].sum(), M[1].sum()
@@ -215,7 +218,8 @@ def estimate_capacity(
         total_eras += int(M[0, 2] + M[1, 2])
         achieved += achieved_position_rate(float(err), epsilon, max_rep)
 
-    block = _block_mi_bits(B, Bhat, max_k=block_max_k)
+    bk = min(k, block_max_k)   # block (whole-word) MI on a small prefix; 2^bk words vs n trials
+    block = _block_mi_bits(B[:, :bk], Bhat[:, :bk], max_k=block_max_k)
 
     return CapacityResult(
         k=k,
@@ -224,6 +228,7 @@ def estimate_capacity(
         capacity_bits_raw=cap_raw,
         achieved_bits=achieved,
         epsilon=epsilon,
+        capacity_bits_unclamped=cap_mm_unclamped,
         per_position_mi=per_mi,
         per_position_error=per_err,
         per_position_p01=per_p01,

@@ -110,6 +110,16 @@ def main() -> None:
     print("-" * len(hdr))
     print(f"overall bit-agreement (where both decoders parsed): {tot_m}/{tot_c} = "
           f"{(tot_m / tot_c if tot_c else 0):.3f}")
+    if tot_c:
+        from scipy.stats import binomtest
+        bt = binomtest(tot_m, tot_c, 0.5, alternative="two-sided")
+        try:
+            lo, hi = bt.proportion_ci(0.95)
+            ci, verdict = f"95% CI [{lo:.3f}, {hi:.3f}]; ", \
+                ("consistent with chance" if lo <= 0.5 <= hi else "ABOVE chance")
+        except Exception:
+            ci, verdict = "", ""
+        print(f"  n={tot_c} compared bits; {ci}p(vs 0.5)={bt.pvalue:.3g}  {verdict}")
     # flag Qwen-family senders whose capacity drops a lot under the non-Qwen decoder
     print("\nQwen-family senders — C_ctrl drop under the non-Qwen decoder (possible self-decoding):")
     for model in models:

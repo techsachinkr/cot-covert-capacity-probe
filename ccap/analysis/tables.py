@@ -103,6 +103,73 @@ def table_hypotheses(hyp: pd.DataFrame, out_path=None) -> str:
     return _write("\n".join(lines), out_path)
 
 
+def perslot_accuracy(trials_df: pd.DataFrame, decoded_col: dict) -> dict:
+    """Mean per-slot decode accuracy vs the intended payload, per mechanism.
+
+    ``decoded_col`` maps mechanism name -> the column to read
+    (``decoded_programmatic`` for surface channels, ``decoded_model`` for conceptual).
+    Erasures / short decodes count as wrong. Used for Table~\\ref{tab:graded}.
+    """
+    from ..payloads import csv_to_bits, str_to_bits
+    df = trials_df[trials_df.get("mode") == "encode"] if "mode" in trials_df else trials_df
+    if "x_excluded" in df:
+        df = df[~df["x_excluded"].astype(str).isin(["1", "True", "true"])]
+    out = {}
+    for mech, col in decoded_col.items():
+        s = df[df["mechanism"] == mech]
+        c = t = 0
+        for _, r in s.iterrows():
+            bi = str_to_bits(str(r["intended"])); bd = csv_to_bits(r.get(col, ""))
+            for j in range(len(bi)):
+                t += 1
+                if j < len(bd) and bd[j] == bi[j]:
+                    c += 1
+        out[mech] = (c / t) if t else float("nan")
+    return out
+
+
+def table_graded_recovery(cells: pd.DataFrame, acc_primary: dict, acc_llama: dict,
+                          order=None, out_path=None) -> str:
+    """Graded / decoder-relative recovery table (per mechanism, mean over the grid).
+
+    Shows that the exact-match knee Ĉ dichotomizes while MI, the coded rate, and per-slot
+    accuracy are graded, and that conceptual channels are decoder-relative. ``acc_primary``
+    and ``acc_llama`` come from :func:`perslot_accuracy` on the primary and non-family runs.
+    """
+    from ..mechanisms import get_mechanism
+    if order is None:
+        order = ["hedging", "acrostic", "enumeration", "ordering",
+                 "framing", "abstraction", "ordering_semantic"]
+    enc = cells[cells["mechanism"] != "benign"]
+    agg = enc.groupby("mechanism").agg(c=("c_ctrl", "mean"), mi=("mi_bits", "mean"),
+                                       coded=("achieved_bits", "mean"))
+
+    def fmt(x):
+        return "---" if x is None or (isinstance(x, float) and pd.isna(x)) else f"{x:.2f}"
+
+    lines = [
+        r"\begin{table}[t]", r"\centering",
+        r"\caption{Graded, decoder-relative recovery per mechanism (mean over the grid). "
+        r"$\hat{C}_{\text{ctrl}}$ dichotomizes; MI (Miller--Madow), the repetition-coded rate "
+        r"(coded), and per-slot accuracy are graded; conceptual channels are decoder-relative "
+        r"(primary vs Llama-3.3-70B).}",
+        r"\label{tab:graded}", r"\footnotesize", r"\setlength{\tabcolsep}{3.5pt}",
+        r"\begin{tabular}{@{}llrrrrr@{}}", r"\toprule",
+        r"Mechanism & Dec. & $\hat{C}$ & MI & coded & acc$_{\text{pri}}$ & acc$_{\text{Lla}}$ \\",
+        r"\midrule",
+    ]
+    for m in order:
+        if m not in agg.index:
+            continue
+        dec = "model" if get_mechanism(m).decoder == "model" else "prog"
+        r = agg.loc[m]
+        al = acc_llama.get(m) if dec == "model" else None
+        lines.append(f"{_esc(m)} & {dec} & {r['c']:.1f} & {r['mi']:.1f} & {r['coded']:.1f} & "
+                     f"{fmt(acc_primary.get(m))} & {fmt(al)} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
+    return _write("\n".join(lines), out_path)
+
+
 def make_all_tables(agg: dict, mechanisms, models, out_dir="figures") -> dict:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
